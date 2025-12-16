@@ -1,0 +1,64 @@
+additional_cargo_args = ["--all-features"]
+examine_globs = ["consensus_encoding/src/**/*.rs", "units/src/**/*.rs", "primitives/src/**/*.rs"]
+exclude_globs = [
+    "units/src/amount/verification.rs" # kani tests
+]
+exclude_re = [
+    "impl Arbitrary",
+    "impl Debug",
+    "impl fmt::Debug",
+    ".*Error",
+    "deserialize", # Skip serde mutation tests
+    "serde_details::<impl de::Visitor<'_>", # Skip serde mutation tests
+    "Iterator", # Mutating operations in an iterator can result in an infinite loop
+    "<impl .*Decodable for .*>::decoder", # Mutant replacing Default::default() is equivalent to returning new()
+    "<impl .*Decoder for .*>::read_limit", # Function is for optimization and does not need to be tested.
+
+
+    # ----------------------------------Crate-specific exclusions----------------------------------
+    # units
+    # src/amount/mod.rs
+    "units/.* parse_signed_to_satoshi", # Can't kill all mutants since there is no denomination smaller than Satoshi
+    "units/.* fmt_satoshi_in", # Related to formatting/display
+    "units/.* dec_width", # Replacing num /= 10 with num %=10 in a loop causes a timeout due to infinite loop
+    # src/locktime/relative.rs
+    "units/.* LockTime::to_consensus_u32", # Mutant from replacing | with ^, this returns the same value since the XOR is taken against the u16 with an all-zero bitmask
+    "units/.* FeeRate::fee_vb", # Deprecated
+    "units/.* FeeRate::fee_wu", # Deprecated
+    "units/.* SignedAmount::checked_abs", # Deprecated
+    "units/.* NumberOfBlocks::value", # Deprecated
+    "units/.* NumberOf512Seconds::to_consensus_u32", # Deprecated
+    "units/.* MedianTimePast::to_consensus_u32", # Deprecated
+    "units/.* Height::to_consensus_u32", # Deprecated
+    "units/.* Sequence::to_hex", # Deprecated
+    "units/.* Sequence::from_512_second_intervals", # Mutant from replacing | with ^, this returns the same value since the XOR is taken against the u16 with an all-zero bitmask
+
+    # primitives
+    "primitives/.* Opcode::classify", # Not possible to kill all mutants without individually checking every opcode classification
+    "primitives/.* Block<Checked>::cached_witness_root", # Skip getters
+    "primitives/.* Block<Checked>::transactions", # Skip getters
+    "primitives/.* Script::to_bytes", # Deprecated
+    "primitives/.* decode_cursor", # Mutating operations in decode_cursor can result in an infinite loop
+    "primitives/.* fmt_debug", # Mutants from formatting/display changes
+    "primitives/.* fmt_debug_pretty", # Mutants from formatting/display changes
+    "primitives/.* CompactTarget::to_hex", # Deprecated
+    "primitives/.* Script::to_hex", # Deprecated
+    "primitives/.* Script<T>::to_hex", # Deprecated
+    "primitives/.* ScriptBuf::to_hex", # Deprecated
+    "primitives/.* ScriptBuf<T>::to_hex", # Deprecated
+    "primitives/.* <impl Encoder for .*Encoder<'_>>::current_chunk", # Replacing the return with Some(vec![]) causes an infinite loop.
+    "primitives/.* <impl Encoder for .*Encoder<'_>>::advance", # Replacing the return with true causes an infinite loop.
+    "primitives/.* <impl Decoder for WitnessDecoder>::push_bytes", # Replacing == with != causes an infinite loop
+    "primitives/.* WitnessDecoder::resize_if_needed", # Replacing *= with += still resizes the buffer making the mutant untestable.
+    "primitives/.* replace \\+ with \\* in MerkleNode::calculate_root", # Replacing + with * causes an infinite loop
+    "primitives/.* replace == with != in MerkleNode::calculate_root", # Replacing == with != isn't caught unless alloc is disabled.
+
+    # consensus_encoding - most of these are for mutations in the logic used to determine when to stop encoding or decoding.
+    "consensus_encoding/.* <impl Decoder for ArrayDecoder<N>>::push_bytes", # Mutations cause an infinite loop
+    "consensus_encoding/.* <impl Decoder for .*>::end", # Mutations cause an infinite loop
+    "consensus_encoding/.* encode_to_vec", # Mutations cause an infinite loop
+    "consensus_encoding/.* encode_to_writer", # Mutations cause an infinite loop
+    "consensus_encoding/.* decode_from_slice", # Mutations cause an infinite loop
+    "consensus_encoding/.* decode_from_read", # Mutations cause an infinite loop
+    "consensus_encoding/.* <impl Decoder for .*>::push_bytes", # Mutations cause an infinite loop
+]
