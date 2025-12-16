@@ -178,24 +178,15 @@ impl Serialize for ecdsa::Signature {
 
 impl Deserialize for ecdsa::Signature {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
-        // NB: Since BIP-174 says "the signature as would be pushed to the stack from
-        // a scriptSig or witness" we should ideally use a consensus deserialization and do
-        // not error on a non-standard values. However,
-        //
-        // 1) the current implementation of from_u32_consensus(`flag`) does not preserve
-        // the sighash byte `flag` mapping all unknown values to EcdsaSighashType::All or
-        // EcdsaSighashType::AllPlusAnyOneCanPay. Therefore, break the invariant
-        // EcdsaSig::from_slice(&sl[..]).to_vec = sl.
-        //
-        // 2) This would cause to have invalid signatures because the sighash message
-        // also has a field sighash_u32 (See BIP141). For example, when signing with non-standard
-        // 0x05, the sighash message would have the last field as 0x05u32 while, the verification
-        // would use check the signature assuming sighash_u32 as `0x01`.
+        // BIP-174 says "the signature as would be pushed to the stack from a scriptSig
+        // or witness". We accept any sighash byte to support non-standard types like
+        // Bitcoin Cash's SIGHASH_FORKID. The raw sighash value is preserved in the
+        // Signature struct for proper round-trip serialization.
         ecdsa::Signature::from_slice(bytes).map_err(|e| match e {
             ecdsa::Error::EmptySignature => Error::InvalidEcdsaSignature(e),
-            ecdsa::Error::SighashType(err) => Error::NonStandardSighashType(err.0),
             ecdsa::Error::Secp256k1(..) => Error::InvalidEcdsaSignature(e),
-            ecdsa::Error::Hex(..) => unreachable!("Decoding from slice, not hex"),
+            ecdsa::Error::SighashType(_) | ecdsa::Error::Hex(..) =>
+                unreachable!("from_slice no longer rejects sighash types or decodes hex"),
         })
     }
 }
@@ -463,5 +454,61 @@ mod tests {
     fn invalid_vector_1() {
         let hex_psbt = b"0200000001268171371edff285e937adeea4b37b78000c0566cbb3ad64641713ca42171bf6000000006a473044022070b2245123e6bf474d60c5b50c043d4c691a5d2435f09a34a7662a9dc251790a022001329ca9dacf280bdf30740ec0390422422c81cb45839457aeb76fc12edd95b3012102657d118d3357b8e0f4c2cd46db7b39f6d9c38d9a70abcb9b2de5dc8dbfe4ce31feffffff02d3dff505000000001976a914d0c59903c5bac2868760e90fd521a4665aa7652088ac00e1f5050000000017a9143545e6e33b832c47050f24d3eeb93c9c03948bc787b32e1300";
         Psbt::deserialize(hex_psbt).unwrap();
+    }
+
+    #[test]
+    fn ecdsa_signature_forkid_roundtrip() {
+        use crate::crypto::ecdsa;
+        use hex::FromHex;
+
+        // Test signature with SIGHASH_ALL | SIGHASH_FORKID (0x41)
+        let sig_bytes = Vec::from_hex(
+            "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab4541"
+        ).unwrap();
+
+        // Deserialize the signature (should accept FORKID)
+        let sig: ecdsa::Signature = Deserialize::deserialize(&sig_bytes).unwrap();
+        assert_eq!(sig.sighash_type, 0x41);
+
+        // Serialize back
+        let serialized = Serialize::serialize(&sig);
+        assert_eq!(serialized, sig_bytes);
+
+        // Verify ecdsa_hash_ty strips FORKID correctly
+        use crate::sighash::EcdsaSighashType;
+        assert_eq!(sig.ecdsa_hash_ty().unwrap(), EcdsaSighashType::All);
+    }
+
+    #[test]
+    fn ecdsa_signature_all_forkid_types() {
+        use crate::crypto::ecdsa;
+        use crate::sighash::EcdsaSighashType;
+        use hex::FromHex;
+
+        // SIGHASH_FORKID = 0x40, test all combinations with base types
+
+        let der_sig = Vec::from_hex(
+            "3046022100839c1fbc5304de944f697c9f4b1d01d1faeba32d751c0f7acb21ac8a0f436a72022100e89bd46bb3a5a62adc679f659b7ce876d83ee297c7a5587b2011c4fcc72eab45"
+        ).unwrap();
+
+        for (sighash, expected_base) in [
+            (0x41, EcdsaSighashType::All),           // ALL | FORKID
+            (0x42, EcdsaSighashType::None),          // NONE | FORKID
+            (0x43, EcdsaSighashType::Single),        // SINGLE | FORKID
+            (0xc1, EcdsaSighashType::AllPlusAnyoneCanPay),    // ALL | ANYONECANPAY | FORKID
+            (0xc2, EcdsaSighashType::NonePlusAnyoneCanPay),   // NONE | ANYONECANPAY | FORKID
+            (0xc3, EcdsaSighashType::SinglePlusAnyoneCanPay), // SINGLE | ANYONECANPAY | FORKID
+        ] {
+            let mut sig_bytes = der_sig.clone();
+            sig_bytes.push(sighash);
+
+            let sig: ecdsa::Signature = Deserialize::deserialize(&sig_bytes).unwrap();
+            assert_eq!(sig.sighash_type, sighash as u32);
+            assert_eq!(sig.ecdsa_hash_ty().unwrap(), expected_base, "sighash=0x{:02x}", sighash);
+
+            // Roundtrip
+            let serialized = Serialize::serialize(&sig);
+            assert_eq!(serialized, sig_bytes);
+        }
     }
 }

@@ -27,6 +27,7 @@ use crate::bip32::{self, DerivationPath, KeySource, Xpriv, Xpub};
 use crate::blockdata::transaction::{self, Transaction, TxOut};
 use crate::crypto::key::{PrivateKey, PublicKey};
 use crate::crypto::{ecdsa, taproot};
+use crate::hashes::Hash as _;
 use crate::key::{TapTweak, XOnlyPublicKey};
 use crate::prelude::*;
 use crate::sighash::{self, EcdsaSighashType, Prevouts, SighashCache};
@@ -342,6 +343,66 @@ impl Psbt {
         }
     }
 
+    /// Signs all the inputs of this PSBT using FORKID sighash algorithm.
+    ///
+    /// This is similar to [`sign`](Psbt::sign) but uses the FORKID
+    /// sighash algorithm for ECDSA inputs. Use this for Bitcoin Cash, Ecash,
+    /// Bitcoin Gold, and other FORKID-based coins.
+    ///
+    /// # Arguments
+    ///
+    /// * `k` - Key source for signing.
+    /// * `secp` - A secp256k1 context.
+    /// * `fork_id` - The fork ID to use (0 for BCH/XEC, 79 for BTG).
+    ///
+    /// # Returns
+    ///
+    /// A map of input index -> keys used to sign, for specifics please see [`SigningKeys`].
+    ///
+    /// If an error is returned some signatures may already have been added to the PSBT.
+    pub fn sign_forkid<C, K>(
+        &mut self,
+        k: &K,
+        secp: &Secp256k1<C>,
+        fork_id: u32,
+    ) -> Result<SigningKeysMap, (SigningKeysMap, SigningErrors)>
+    where
+        C: Signing + Verification,
+        K: GetKey,
+    {
+        let tx = self.unsigned_tx.clone();
+        let mut cache = SighashCache::new(&tx);
+
+        let mut used = BTreeMap::new();
+        let mut errors = BTreeMap::new();
+
+        for i in 0..self.inputs.len() {
+            match self.signing_algorithm(i) {
+                Ok(SigningAlgorithm::Ecdsa) =>
+                    match self.bip32_sign_forkid(k, i, &mut cache, secp, fork_id) {
+                        Ok(v) => {
+                            used.insert(i, SigningKeys::Ecdsa(v));
+                        }
+                        Err(e) => {
+                            errors.insert(i, e);
+                        }
+                    },
+                Ok(SigningAlgorithm::Schnorr) => {
+                    // FORKID coins don't support Taproot/Schnorr
+                    errors.insert(i, SignError::Unsupported);
+                }
+                Err(e) => {
+                    errors.insert(i, e);
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(used)
+        } else {
+            Err((used, errors))
+        }
+    }
+
     /// Attempts to create all signatures required by this PSBT's `bip32_derivation` field, adding
     /// them to `partial_sigs`.
     ///
@@ -364,6 +425,70 @@ impl Psbt {
         let msg_sighash_ty_res = self.sighash_ecdsa(input_index, cache);
 
         let input = &mut self.inputs[input_index]; // Index checked in call to `sighash_ecdsa`.
+
+        let mut used = vec![]; // List of pubkeys used to sign the input.
+
+        for (pk, key_source) in input.bip32_derivation.iter() {
+            let sk = if let Ok(Some(sk)) = k.get_key(KeyRequest::Bip32(key_source.clone()), secp) {
+                sk
+            } else if let Ok(Some(sk)) = k.get_key(KeyRequest::Pubkey(PublicKey::new(*pk)), secp) {
+                sk
+            } else {
+                continue;
+            };
+
+            // Only return the error if we have a secret key to sign this input.
+            let (msg, sighash_ty) = match msg_sighash_ty_res {
+                Err(e) => return Err(e),
+                Ok((msg, sighash_ty)) => (msg, sighash_ty),
+            };
+
+            let sig = ecdsa::Signature {
+                signature: secp.sign_ecdsa(&msg, &sk.inner),
+                sighash_type: sighash_ty.to_u32(),
+            };
+
+            let pk = sk.public_key(secp);
+
+            input.partial_sigs.insert(pk, sig);
+            used.push(pk);
+        }
+
+        Ok(used)
+    }
+
+    /// Attempts to create all signatures for a FORKID input using BIP32 keys.
+    ///
+    /// Use this for Bitcoin Cash, Ecash, Bitcoin Gold, and other FORKID-based coins.
+    ///
+    /// # Arguments
+    ///
+    /// * `k` - A key source providing the secret keys.
+    /// * `input_index` - The index of the input to sign.
+    /// * `cache` - A [`SighashCache`] for computing the sighash.
+    /// * `secp` - A secp256k1 context for signing.
+    /// * `fork_id` - The fork ID to use (0 for BCH/XEC, 79 for BTG).
+    ///
+    /// # Returns
+    ///
+    /// - Ok: A list of the public keys used in signing.
+    /// - Err: Error encountered trying to calculate the sighash AND we had the signing key.
+    pub fn bip32_sign_forkid<C, K, T>(
+        &mut self,
+        k: &K,
+        input_index: usize,
+        cache: &mut SighashCache<T>,
+        secp: &Secp256k1<C>,
+        fork_id: u32,
+    ) -> Result<Vec<PublicKey>, SignError>
+    where
+        C: Signing,
+        T: Borrow<Transaction>,
+        K: GetKey,
+    {
+        let msg_sighash_ty_res = self.sighash_forkid(input_index, cache, fork_id);
+
+        let input = &mut self.inputs[input_index]; // Index checked in call to `sighash_forkid`.
 
         let mut used = vec![]; // List of pubkeys used to sign the input.
 
@@ -504,55 +629,167 @@ impl Psbt {
         input_index: usize,
         cache: &mut SighashCache<T>,
     ) -> Result<(Message, EcdsaSighashType), SignError> {
-        use OutputType::*;
-
         if self.signing_algorithm(input_index)? != SigningAlgorithm::Ecdsa {
             return Err(SignError::WrongSigningAlgorithm);
         }
 
         let input = self.checked_input(input_index)?;
-        let utxo = self.spend_utxo(input_index)?;
-        let spk = &utxo.script_pubkey; // scriptPubkey for input spend utxo.
+        let hash_ty = input.ecdsa_hash_ty().map_err(|_| SignError::InvalidSighashType)?;
 
-        let hash_ty = input.ecdsa_hash_ty().map_err(|_| SignError::InvalidSighashType)?; // Only support standard sighash types.
+        let (msg, _) = self.sighash_ecdsa_forkid(input_index, cache, hash_ty.to_u32(), None)?;
+        Ok((msg, hash_ty))
+    }
+
+    /// Returns the sighash message to sign a FORKID coin input (BCH, BTG, etc.).
+    ///
+    /// Uses the raw sighash type from this input if one is specified. If no sighash type is
+    /// specified, uses `0x41` (SIGHASH_ALL | SIGHASH_FORKID). This function does not support
+    /// scripts that contain `OP_CODESEPARATOR`.
+    ///
+    /// # Arguments
+    ///
+    /// * `input_index` - The index of the input to sign.
+    /// * `cache` - A [`SighashCache`] for computing the sighash.
+    /// * `fork_id` - The fork ID to use (0 for Bitcoin Cash, 79 for Bitcoin Gold).
+    ///
+    /// # Returns
+    ///
+    /// A tuple of the sighash message to sign and the raw sighash type (u32).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the output type is not supported or required data is missing.
+    /// BCH only supports non-segwit (Bare, Sh), while BTG supports all output types except Taproot.
+    pub fn sighash_forkid<T: Borrow<Transaction>>(
+        &self,
+        input_index: usize,
+        cache: &mut SighashCache<T>,
+        fork_id: u32,
+    ) -> Result<(Message, u32), SignError> {
+        let input = self.checked_input(input_index)?;
+
+        // Default to SIGHASH_ALL | SIGHASH_FORKID
+        const SIGHASH_FORKID_FLAG: u32 = 0x40;
+        let hash_ty = input.raw_sighash_type().unwrap_or(0x01 | SIGHASH_FORKID_FLAG);
+
+        self.sighash_ecdsa_forkid(input_index, cache, hash_ty, Some(fork_id))
+    }
+
+    /// Internal implementation for ECDSA sighash computation with optional FORKID support.
+    ///
+    /// # Arguments
+    ///
+    /// * `fork_id` - `None` for standard Bitcoin (uses legacy sighash for Bare/Sh),
+    ///   `Some(id)` for FORKID coins (uses BIP143-style for all output types).
+    fn sighash_ecdsa_forkid<T: Borrow<Transaction>>(
+        &self,
+        input_index: usize,
+        cache: &mut SighashCache<T>,
+        hash_ty: u32,
+        fork_id: Option<u32>,
+    ) -> Result<(Message, u32), SignError> {
+        use OutputType::*;
+
+        let input = self.checked_input(input_index)?;
+        let utxo = self.spend_utxo(input_index)?;
+        let spk = &utxo.script_pubkey;
 
         match self.output_type(input_index)? {
             Bare => {
-                let sighash = cache
-                    .legacy_signature_hash(input_index, spk, hash_ty.to_u32())
-                    .expect("input checked above");
-                Ok((Message::from(sighash), hash_ty))
+                if let Some(id) = fork_id {
+                    // FORKID coins use BIP143-style for all inputs
+                    let mut enc = sighash::SegwitV0Sighash::engine();
+                    cache
+                        .segwit_v0_encode_signing_data_to_forkid(
+                            &mut enc,
+                            input_index,
+                            spk,
+                            utxo.value,
+                            hash_ty,
+                            Some(id),
+                        )
+                        .map_err(|e| match e {
+                            sighash::SigningDataError::Sighash(e) => SignError::SegwitV0Sighash(e),
+                            sighash::SigningDataError::Io(_) => {
+                                unreachable!("hash engine cannot fail")
+                            }
+                        })?;
+                    let sighash = sighash::SegwitV0Sighash::from_engine(enc);
+                    Ok((Message::from(sighash), hash_ty))
+                } else {
+                    // Standard Bitcoin uses legacy sighash
+                    let sighash = cache
+                        .legacy_signature_hash(input_index, spk, hash_ty)
+                        .expect("input checked above");
+                    Ok((Message::from(sighash), hash_ty))
+                }
             }
             Sh => {
                 let script_code =
                     input.redeem_script.as_ref().ok_or(SignError::MissingRedeemScript)?;
-                let sighash = cache
-                    .legacy_signature_hash(input_index, script_code, hash_ty.to_u32())
-                    .expect("input checked above");
-                Ok((Message::from(sighash), hash_ty))
+                if let Some(id) = fork_id {
+                    // FORKID coins use BIP143-style for all inputs
+                    let mut enc = sighash::SegwitV0Sighash::engine();
+                    cache
+                        .segwit_v0_encode_signing_data_to_forkid(
+                            &mut enc,
+                            input_index,
+                            script_code,
+                            utxo.value,
+                            hash_ty,
+                            Some(id),
+                        )
+                        .map_err(|e| match e {
+                            sighash::SigningDataError::Sighash(e) => SignError::SegwitV0Sighash(e),
+                            sighash::SigningDataError::Io(_) => {
+                                unreachable!("hash engine cannot fail")
+                            }
+                        })?;
+                    let sighash = sighash::SegwitV0Sighash::from_engine(enc);
+                    Ok((Message::from(sighash), hash_ty))
+                } else {
+                    // Standard Bitcoin uses legacy sighash
+                    let sighash = cache
+                        .legacy_signature_hash(input_index, script_code, hash_ty)
+                        .expect("input checked above");
+                    Ok((Message::from(sighash), hash_ty))
+                }
             }
             Wpkh => {
-                let sighash = cache.p2wpkh_signature_hash(input_index, spk, utxo.value, hash_ty)?;
+                let sighash = cache
+                    .p2wpkh_signature_hash_forkid(input_index, spk, utxo.value, hash_ty, fork_id)
+                    .map_err(|_| SignError::NotWpkh)?;
                 Ok((Message::from(sighash), hash_ty))
             }
             ShWpkh => {
-                let redeem_script = input.redeem_script.as_ref().expect("checked above");
-                let sighash =
-                    cache.p2wpkh_signature_hash(input_index, redeem_script, utxo.value, hash_ty)?;
+                let redeem_script =
+                    input.redeem_script.as_ref().ok_or(SignError::MissingRedeemScript)?;
+                let sighash = cache
+                    .p2wpkh_signature_hash_forkid(
+                        input_index,
+                        redeem_script,
+                        utxo.value,
+                        hash_ty,
+                        fork_id,
+                    )
+                    .map_err(|_| SignError::NotWpkh)?;
                 Ok((Message::from(sighash), hash_ty))
             }
             Wsh | ShWsh => {
                 let witness_script =
                     input.witness_script.as_ref().ok_or(SignError::MissingWitnessScript)?;
                 let sighash = cache
-                    .p2wsh_signature_hash(input_index, witness_script, utxo.value, hash_ty)
+                    .p2wsh_signature_hash_forkid(
+                        input_index,
+                        witness_script,
+                        utxo.value,
+                        hash_ty,
+                        fork_id,
+                    )
                     .map_err(SignError::SegwitV0Sighash)?;
                 Ok((Message::from(sighash), hash_ty))
             }
-            Tr => {
-                // This PSBT signing API is WIP, taproot to come shortly.
-                Err(SignError::Unsupported)
-            }
+            Tr => Err(SignError::Unsupported),
         }
     }
 

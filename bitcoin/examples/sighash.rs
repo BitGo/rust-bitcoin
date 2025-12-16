@@ -40,8 +40,9 @@ fn compute_sighash_p2wpkh(raw_tx: &[u8], inp_idx: usize, value: u64) {
     let spk = ScriptBuf::new_p2wpkh(&wpkh);
 
     let mut cache = sighash::SighashCache::new(&tx);
+    let hash_ty = sig.ecdsa_hash_ty().expect("non-standard sighash type");
     let sighash = cache
-        .p2wpkh_signature_hash(inp_idx, &spk, Amount::from_sat(value), sig.sighash_type)
+        .p2wpkh_signature_hash(inp_idx, &spk, Amount::from_sat(value), hash_ty)
         .expect("failed to compute sighash");
     println!("Segwit p2wpkh sighash: {:x}", sighash);
     let msg = secp256k1::Message::from(sighash);
@@ -90,9 +91,9 @@ fn compute_sighash_legacy(raw_tx: &[u8], inp_idx: usize, script_pubkey_bytes_opt
         let sig = ecdsa::Signature::from_slice(instr.unwrap().push_bytes().unwrap().as_bytes())
             .expect("failed to parse sig");
         let sighash = cache
-            .legacy_signature_hash(inp_idx, script_code, sig.sighash_type.to_u32())
+            .legacy_signature_hash(inp_idx, script_code, sig.sighash_type)
             .expect("failed to compute sighash");
-        println!("Legacy sighash: {:x} (sighash flag {})", sighash, sig.sighash_type);
+        println!("Legacy sighash: {:x} (sighash flag 0x{:02x})", sighash, sig.sighash_type);
     }
 }
 
@@ -122,15 +123,16 @@ fn compute_sighash_p2wsh(raw_tx: &[u8], inp_idx: usize, value: u64) {
                                            //ECDSA signature in DER format lengths are between 70 and 72 bytes
         assert!((70..=72).contains(&sig_len), "signature length {} out of bounds", sig_len);
         //here we assume that all sighash_flags are the same. Can they be different?
+        let hash_ty = sig.ecdsa_hash_ty().expect("non-standard sighash type");
         let sighash = cache
             .p2wsh_signature_hash(
                 inp_idx,
                 witness_script,
                 Amount::from_sat(value),
-                sig.sighash_type,
+                hash_ty,
             )
             .expect("failed to compute sighash");
-        println!("Segwit p2wsh sighash: {:x} ({})", sighash, sig.sighash_type);
+        println!("Segwit p2wsh sighash: {:x} (0x{:02x})", sighash, sig.sighash_type);
     }
 }
 

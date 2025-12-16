@@ -174,7 +174,7 @@ fn serde_regression_ecdsa_sig() {
     let s = include_str!("data/serde/ecdsa_sig_hex");
     let sig = ecdsa::Signature {
         signature: secp256k1::ecdsa::Signature::from_str(s.trim()).unwrap(),
-        sighash_type: EcdsaSighashType::All,
+        sighash_type: EcdsaSighashType::All as u32,
     };
 
     let got = serialize(&sig).unwrap();

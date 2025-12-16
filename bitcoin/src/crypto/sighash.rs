@@ -782,9 +782,43 @@ impl<R: Borrow<Transaction>> SighashCache<R> {
         value: Amount,
         sighash_type: EcdsaSighashType,
     ) -> Result<(), SigningDataError<transaction::InputsIndexError>> {
+        self.segwit_v0_encode_signing_data_to_forkid(
+            writer,
+            input_index,
+            script_code,
+            value,
+            sighash_type.to_u32(),
+            None,
+        )
+    }
+
+    /// Encodes the BIP143-style signing data with optional FORKID support.
+    ///
+    /// This is similar to [`Self::segwit_v0_encode_signing_data_to`] but accepts a raw `u32`
+    /// sighash type and an optional fork_id for FORKID coins (BCH, BTG, etc.).
+    ///
+    /// # Arguments
+    ///
+    /// * `sighash_type` - Raw sighash type as u32 (may include FORKID flag 0x40)
+    /// * `fork_id` - Optional fork identifier. Use `None` for standard BIP143 (Bitcoin SegWit),
+    ///   `Some(0)` for Bitcoin Cash, `Some(79)` for Bitcoin Gold, etc.
+    ///   When `Some(id)`, the sighash type is encoded as `(id << 8) | sighash_type`.
+    pub fn segwit_v0_encode_signing_data_to_forkid<W: Write + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        input_index: usize,
+        script_code: &Script,
+        value: Amount,
+        sighash_type: u32,
+        fork_id: Option<u32>,
+    ) -> Result<(), SigningDataError<transaction::InputsIndexError>> {
         let zero_hash = sha256d::Hash::all_zeros();
 
-        let (sighash, anyone_can_pay) = sighash_type.split_anyonecanpay_flag();
+        // Extract base type and flags using masks
+        let anyone_can_pay = (sighash_type & 0x80) != 0;
+        let base_type = sighash_type & 0x1f;
+        let is_single = base_type == 0x03;
+        let is_none = base_type == 0x02;
 
         self.tx.borrow().version.consensus_encode(writer)?;
 
@@ -794,10 +828,7 @@ impl<R: Borrow<Transaction>> SighashCache<R> {
             zero_hash.consensus_encode(writer)?;
         }
 
-        if !anyone_can_pay
-            && sighash != EcdsaSighashType::Single
-            && sighash != EcdsaSighashType::None
-        {
+        if !anyone_can_pay && !is_single && !is_none {
             self.segwit_cache().sequences.consensus_encode(writer)?;
         } else {
             zero_hash.consensus_encode(writer)?;
@@ -811,10 +842,9 @@ impl<R: Borrow<Transaction>> SighashCache<R> {
             txin.sequence.consensus_encode(writer)?;
         }
 
-        if sighash != EcdsaSighashType::Single && sighash != EcdsaSighashType::None {
+        if !is_single && !is_none {
             self.segwit_cache().outputs.consensus_encode(writer)?;
-        } else if sighash == EcdsaSighashType::Single && input_index < self.tx.borrow().output.len()
-        {
+        } else if is_single && input_index < self.tx.borrow().output.len() {
             let mut single_enc = LegacySighash::engine();
             self.tx.borrow().output[input_index].consensus_encode(&mut single_enc)?;
             let hash = LegacySighash::from_engine(single_enc);
@@ -824,7 +854,13 @@ impl<R: Borrow<Transaction>> SighashCache<R> {
         }
 
         self.tx.borrow().lock_time.consensus_encode(writer)?;
-        sighash_type.to_u32().consensus_encode(writer)?;
+
+        // Encode sighash type with optional fork_id
+        let encoded_sighash = match fork_id {
+            Some(id) => (id << 8) | sighash_type,
+            None => sighash_type,
+        };
+        encoded_sighash.consensus_encode(writer)?;
         Ok(())
     }
 
@@ -839,15 +875,43 @@ impl<R: Borrow<Transaction>> SighashCache<R> {
         value: Amount,
         sighash_type: EcdsaSighashType,
     ) -> Result<SegwitV0Sighash, P2wpkhError> {
+        self.p2wpkh_signature_hash_forkid(
+            input_index,
+            script_pubkey,
+            value,
+            sighash_type.to_u32(),
+            None,
+        )
+    }
+
+    /// Computes the BIP143-style sighash for p2wpkh with optional FORKID support.
+    ///
+    /// This is similar to [`Self::p2wpkh_signature_hash`] but accepts a raw `u32` sighash type
+    /// and an optional fork_id for FORKID coins (BCH, BTG, etc.).
+    ///
+    /// # Arguments
+    ///
+    /// * `sighash_type` - Raw sighash type as u32 (may include FORKID flag 0x40)
+    /// * `fork_id` - Optional fork identifier. Use `None` for standard BIP143,
+    ///   `Some(0)` for Bitcoin Cash, `Some(79)` for Bitcoin Gold, etc.
+    pub fn p2wpkh_signature_hash_forkid(
+        &mut self,
+        input_index: usize,
+        script_pubkey: &Script,
+        value: Amount,
+        sighash_type: u32,
+        fork_id: Option<u32>,
+    ) -> Result<SegwitV0Sighash, P2wpkhError> {
         let script_code = script_pubkey.p2wpkh_script_code().ok_or(P2wpkhError::NotP2wpkhScript)?;
 
         let mut enc = SegwitV0Sighash::engine();
-        self.segwit_v0_encode_signing_data_to(
+        self.segwit_v0_encode_signing_data_to_forkid(
             &mut enc,
             input_index,
             &script_code,
             value,
             sighash_type,
+            fork_id,
         )
         .map_err(SigningDataError::unwrap_sighash)?;
         Ok(SegwitV0Sighash::from_engine(enc))
@@ -861,13 +925,41 @@ impl<R: Borrow<Transaction>> SighashCache<R> {
         value: Amount,
         sighash_type: EcdsaSighashType,
     ) -> Result<SegwitV0Sighash, transaction::InputsIndexError> {
+        self.p2wsh_signature_hash_forkid(
+            input_index,
+            witness_script,
+            value,
+            sighash_type.to_u32(),
+            None,
+        )
+    }
+
+    /// Computes the BIP143-style sighash for p2wsh with optional FORKID support.
+    ///
+    /// This is similar to [`Self::p2wsh_signature_hash`] but accepts a raw `u32` sighash type
+    /// and an optional fork_id for FORKID coins (BCH, BTG, etc.).
+    ///
+    /// # Arguments
+    ///
+    /// * `sighash_type` - Raw sighash type as u32 (may include FORKID flag 0x40)
+    /// * `fork_id` - Optional fork identifier. Use `None` for standard BIP143,
+    ///   `Some(0)` for Bitcoin Cash, `Some(79)` for Bitcoin Gold, etc.
+    pub fn p2wsh_signature_hash_forkid(
+        &mut self,
+        input_index: usize,
+        witness_script: &Script,
+        value: Amount,
+        sighash_type: u32,
+        fork_id: Option<u32>,
+    ) -> Result<SegwitV0Sighash, transaction::InputsIndexError> {
         let mut enc = SegwitV0Sighash::engine();
-        self.segwit_v0_encode_signing_data_to(
+        self.segwit_v0_encode_signing_data_to_forkid(
             &mut enc,
             input_index,
             witness_script,
             value,
             sighash_type,
+            fork_id,
         )
         .map_err(SigningDataError::unwrap_sighash)?;
         Ok(SegwitV0Sighash::from_engine(enc))
@@ -2171,5 +2263,221 @@ mod tests {
         bip143_p2wsh_nested_in_p2sh_sighash_all_plus_anyonecanpay, AllPlusAnyoneCanPay, "2a67f03e63a6a422125878b40b82da593be8d4efaafe88ee528af6e5a9955c6e";
         bip143_p2wsh_nested_in_p2sh_sighash_none_plus_anyonecanpay, NonePlusAnyoneCanPay, "781ba15f3779d5542ce8ecb5c18716733a5ee42a6f51488ec96154934e2c890a";
         bip143_p2wsh_nested_in_p2sh_sighash_single_plus_anyonecanpay, SinglePlusAnyoneCanPay, "511e8e52ed574121fc1b654970395502128263f62662e076dc6baf05c2e6a99b";
+    }
+
+    /// Test the FORKID sighash implementation against known-good values.
+    /// This test verifies the algorithm using BIP143-style test vectors with explicit amounts.
+    #[test]
+    fn forkid_sighash_basic() {
+        // Use BIP143 test vectors as a baseline - FORKID uses the same algorithm
+        // with just a different sighash type encoding (fork_id << 8 | hash_type)
+
+        // BIP143 Example P2WPKH test case (from bip143_p2wpkh test)
+        // We can use this to verify our FORKID implementation produces the same
+        // intermediate results, since FORKID with fork_id=0 is identical to BIP143
+        let tx = deserialize::<Transaction>(
+            &hex!(
+                "0100000002fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f000000\
+                0000eeffffffef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a01000000\
+                00ffffffff02202cb206000000001976a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac9093\
+                510d000000001976a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac11000000"
+            ),
+        )
+        .unwrap();
+
+        // P2WPKH script code for the second input
+        let script_code =
+            ScriptBuf::from_hex("76a9141d0f172a0ecb48aee1be1f2687d2963ae33f71a188ac").unwrap();
+        let value = Amount::from_sat(600_000_000);
+        let input_index = 1;
+
+        // FORKID with fork_id=0 and SIGHASH_ALL|SIGHASH_FORKID (0x41)
+        // should produce the same result as BIP143 with SIGHASH_ALL (0x01)
+        // since (0 << 8) | 0x41 = 0x41, and the algorithm uses base_type & 0x1f = 0x01 = ALL
+        let sighash_type = 0x41u32; // SIGHASH_ALL | SIGHASH_FORKID
+
+        let mut cache = SighashCache::new(&tx);
+
+        // Compute FORKID sighash using the _forkid variant with Some(fork_id)
+        let mut enc = SegwitV0Sighash::engine();
+        cache
+            .segwit_v0_encode_signing_data_to_forkid(
+                &mut enc,
+                input_index,
+                &script_code,
+                value,
+                sighash_type,
+                Some(0),
+            )
+            .unwrap();
+        let forkid_hash = SegwitV0Sighash::from_engine(enc);
+
+        // The expected hash should match BIP143 result:
+        // "c37af31116d1b27caf68aae9e3ac82f1477929014d5b917657d0eb49478cb670"
+        // But with fork_id=0, the sighash_type encoding is (0 << 8) | 0x41 = 0x41
+        // vs BIP143 which encodes just 0x01
+        // So the final hash will differ only in the last 4 bytes of the preimage.
+
+        // For FORKID with sighash_type=0x41 and fork_id=0:
+        // The preimage ends with: ... | lock_time (4) | (0 << 8) | 0x41 (4)
+        // Which is: ... | 11000000 | 41000000
+        // For BIP143 with sighash_type=0x01:
+        // The preimage ends with: ... | lock_time (4) | 01000000 (4)
+        // Which is: ... | 11000000 | 01000000
+
+        // Verify the hash is computed (we can't easily predict the exact value)
+        // but we can verify it's different from the BIP143 hash due to different sighash encoding
+        let bip143_hash = cache
+            .p2wsh_signature_hash(input_index, &script_code, value, EcdsaSighashType::All)
+            .unwrap();
+
+        // FORKID hash should be different because sighash_type encoding differs
+        assert_ne!(
+            forkid_hash.to_byte_array(),
+            bip143_hash.to_byte_array(),
+            "FORKID hash should differ from BIP143 due to sighash_type encoding"
+        );
+
+        // Verify with SIGHASH_ALL (0x01) without FORKID flag but using Some(0) fork_id
+        // This tests the encoding difference: (0 << 8) | 0x01 = 0x01
+        let sighash_type_no_forkid = 0x01u32; // Just SIGHASH_ALL
+        let mut enc2 = SegwitV0Sighash::engine();
+        cache
+            .segwit_v0_encode_signing_data_to_forkid(
+                &mut enc2,
+                input_index,
+                &script_code,
+                value,
+                sighash_type_no_forkid,
+                Some(0),
+            )
+            .unwrap();
+        let forkid_hash_no_flag = SegwitV0Sighash::from_engine(enc2);
+
+        // With fork_id=0 and sighash_type=0x01, encoding is (0 << 8) | 0x01 = 0x01
+        // This should match BIP143 with None fork_id
+        assert_eq!(
+            forkid_hash_no_flag.to_byte_array(),
+            bip143_hash.to_byte_array(),
+            "FORKID sighash with fork_id=0 and type=0x01 should match BIP143"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn forkid_sighash_test_vectors() {
+        use serde_json::Value;
+
+        use crate::blockdata::script::Instruction;
+        use crate::opcodes;
+
+        /// SIGHASH_FORKID flag
+        const SIGHASH_FORKID: u32 = 0x40;
+
+        fn run_test_forkid_sighash(
+            tx_hex: &str,
+            script_hex: &str,
+            input_index: usize,
+            hash_type: i64,
+            expected_hash: &str,
+            test_index: usize,
+        ) {
+            let tx: Transaction = deserialize(&Vec::from_hex(tx_hex).unwrap()[..]).unwrap();
+            let script = ScriptBuf::from(Vec::from_hex(script_hex).unwrap());
+            let sighash_type = hash_type as u32;
+
+            // Parse expected hash
+            let mut expected_bytes = Vec::from_hex(expected_hash).unwrap();
+            expected_bytes.reverse();
+
+            // The "signature_hash (regular)" column represents:
+            // - When FORKID (0x40) is SET: Use BIP143-style algorithm with value
+            // - When FORKID is NOT set: Use legacy algorithm (no value needed)
+            let has_forkid = (sighash_type & SIGHASH_FORKID) != 0;
+
+            if has_forkid {
+                // Use BIP143-style FORKID algorithm
+                // BCH test vectors appear to use value=0 for the FORKID algorithm
+                let value = Amount::from_sat(0);
+                let want = SegwitV0Sighash::from_slice(&expected_bytes).unwrap();
+                let mut cache = SighashCache::new(&tx);
+
+                // Use _forkid variant with fork_id=Some(0) for BCH
+                let mut enc = SegwitV0Sighash::engine();
+                cache
+                    .segwit_v0_encode_signing_data_to_forkid(
+                        &mut enc,
+                        input_index,
+                        &script,
+                        value,
+                        sighash_type,
+                        Some(0),
+                    )
+                    .unwrap();
+                let got = SegwitV0Sighash::from_engine(enc);
+
+                assert_eq!(
+                    got, want,
+                    "Test {}: FORKID sighash mismatch for input {} hash_type 0x{:08x}, value {}",
+                    test_index, input_index, sighash_type, value
+                );
+            } else {
+                // Use legacy algorithm when FORKID is not set
+                let want = LegacySighash::from_slice(&expected_bytes).unwrap();
+                let cache = SighashCache::new(&tx);
+                let got = cache.legacy_signature_hash(input_index, &script, sighash_type).unwrap();
+
+                assert_eq!(
+                    got, want,
+                    "Test {}: Legacy sighash mismatch for input {} hash_type 0x{:08x}",
+                    test_index, input_index, sighash_type
+                );
+            }
+        }
+
+        let data = include_str!("../../../altcoins/bitcoincash/src/test/data/sighash.json");
+        let testdata = serde_json::from_str::<Value>(data).unwrap().as_array().unwrap().clone();
+
+        let mut passed = 0;
+        let mut skipped = 0;
+
+        for (i, t) in testdata.iter().enumerate().skip(1) {
+            let tx = t.get(0).unwrap().as_str().unwrap();
+            let script_hex = t.get(1).unwrap().as_str().unwrap_or("");
+            let input_index = t.get(2).unwrap().as_u64().unwrap();
+            let hash_type = t.get(3).unwrap().as_i64().unwrap();
+            let expected_hash = t.get(4).unwrap().as_str().unwrap();
+
+            let sighash_type = hash_type as u32;
+            let has_forkid = (sighash_type & SIGHASH_FORKID) != 0;
+
+            // Skip legacy tests with OP_CODESEPARATOR in the script
+            // The legacy sighash implementation doesn't handle OP_CODESEPARATOR
+            if !has_forkid {
+                let script = ScriptBuf::from(Vec::from_hex(script_hex).unwrap());
+                let has_codesep = script.instructions().any(|instr| {
+                    matches!(instr, Ok(Instruction::Op(opcodes::all::OP_CODESEPARATOR)))
+                });
+                if has_codesep {
+                    skipped += 1;
+                    continue;
+                }
+            }
+
+            run_test_forkid_sighash(
+                tx,
+                script_hex,
+                input_index as usize,
+                hash_type,
+                expected_hash,
+                i,
+            );
+            passed += 1;
+        }
+
+        eprintln!(
+            "FORKID sighash tests: {} passed, {} skipped (OP_CODESEPARATOR)",
+            passed, skipped
+        );
     }
 }

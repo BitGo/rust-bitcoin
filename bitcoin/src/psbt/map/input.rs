@@ -195,6 +195,40 @@ impl PsbtSighashType {
         EcdsaSighashType::from_standard(self.inner)
     }
 
+    /// Returns the base [`EcdsaSighashType`], stripping non-standard flags like FORKID.
+    ///
+    /// This is useful for Bitcoin Cash transactions where SIGHASH_FORKID (0x40) is set.
+    /// It extracts the standard sighash type by masking out FORKID and keeping only
+    /// the base type (0x1f) and ANYONECANPAY (0x80).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the base type (after masking flags) is not a standard type.
+    pub fn ecdsa_hash_ty_bch(self) -> Result<EcdsaSighashType, NonStandardSighashTypeError> {
+        // Strip FORKID (0x40) and keep only base type (0x1f) + ANYONECANPAY (0x80)
+        let base = self.inner & 0x1f;
+        let anyonecanpay = (self.inner & 0x80) != 0;
+
+        use EcdsaSighashType::*;
+        let base_type = match base {
+            0x01 => All,
+            0x02 => None,
+            0x03 => Single,
+            _ => return Err(NonStandardSighashTypeError(self.inner)),
+        };
+
+        Ok(if anyonecanpay {
+            match base_type {
+                All => AllPlusAnyoneCanPay,
+                None => NonePlusAnyoneCanPay,
+                Single => SinglePlusAnyoneCanPay,
+                _ => unreachable!(),
+            }
+        } else {
+            base_type
+        })
+    }
+
     /// Returns the [`TapSighashType`] if the [`PsbtSighashType`] can be
     /// converted to one.
     pub fn taproot_hash_ty(self) -> Result<TapSighashType, InvalidSighashTypeError> {
@@ -229,6 +263,26 @@ impl Input {
             .map(|sighash_type| sighash_type.ecdsa_hash_ty())
             .unwrap_or(Ok(EcdsaSighashType::All))
     }
+
+    /// Obtains the base [`EcdsaSighashType`] for BCH inputs, stripping FORKID.
+    ///
+    /// If no sighash type is specified, returns [`EcdsaSighashType::All`].
+    /// This is useful for Bitcoin Cash transactions where SIGHASH_FORKID (0x40) is set.
+    ///
+    /// # Errors
+    ///
+    /// If the base sighash type (after stripping FORKID) is not a standard value.
+    pub fn ecdsa_hash_ty_bch(&self) -> Result<EcdsaSighashType, NonStandardSighashTypeError> {
+        self.sighash_type
+            .map(|sighash_type| sighash_type.ecdsa_hash_ty_bch())
+            .unwrap_or(Ok(EcdsaSighashType::All))
+    }
+
+    /// Obtains the raw sighash type value for this input.
+    ///
+    /// Returns `None` if no sighash type is specified.
+    /// This is useful when working with non-standard sighash types like Bitcoin Cash's FORKID.
+    pub fn raw_sighash_type(&self) -> Option<u32> { self.sighash_type.map(|t| t.to_u32()) }
 
     /// Obtains the [`TapSighashType`] for this input if one is specified. If no sighash type is
     /// specified, returns [`TapSighashType::Default`].
@@ -578,5 +632,44 @@ mod test {
         assert_eq!(back, sighash);
         assert_eq!(back.ecdsa_hash_ty(), Err(NonStandardSighashTypeError(nonstd)));
         assert_eq!(back.taproot_hash_ty(), Err(InvalidSighashTypeError(nonstd)));
+    }
+
+    #[test]
+    fn psbt_sighash_type_forkid() {
+        // Test that standard ecdsa_hash_ty fails for FORKID (0x41 = ALL | FORKID)
+        let sighash = PsbtSighashType::from_u32(0x41);
+        assert!(sighash.ecdsa_hash_ty().is_err());
+
+        // Test that ecdsa_hash_ty_bch strips FORKID correctly
+        for (raw, expected) in [
+            (0x41, EcdsaSighashType::All),           // ALL | FORKID
+            (0x42, EcdsaSighashType::None),          // NONE | FORKID
+            (0x43, EcdsaSighashType::Single),        // SINGLE | FORKID
+            (0xc1, EcdsaSighashType::AllPlusAnyoneCanPay),    // ALL | ANYONECANPAY | FORKID
+            (0xc2, EcdsaSighashType::NonePlusAnyoneCanPay),   // NONE | ANYONECANPAY | FORKID
+            (0xc3, EcdsaSighashType::SinglePlusAnyoneCanPay), // SINGLE | ANYONECANPAY | FORKID
+        ] {
+            let sighash = PsbtSighashType::from_u32(raw);
+            assert_eq!(sighash.ecdsa_hash_ty_bch().unwrap(), expected, "raw=0x{:02x}", raw);
+        }
+    }
+
+    #[test]
+    fn input_raw_sighash_type() {
+        let mut input = Input::default();
+        
+        // No sighash type set
+        assert_eq!(input.raw_sighash_type(), None);
+        
+        // Standard sighash type
+        input.sighash_type = Some(PsbtSighashType::from_u32(0x01));
+        assert_eq!(input.raw_sighash_type(), Some(0x01));
+        
+        // FORKID sighash type
+        input.sighash_type = Some(PsbtSighashType::from_u32(0x41));
+        assert_eq!(input.raw_sighash_type(), Some(0x41));
+        
+        // ecdsa_hash_ty_bch should work for FORKID
+        assert_eq!(input.ecdsa_hash_ty_bch().unwrap(), EcdsaSighashType::All);
     }
 }
