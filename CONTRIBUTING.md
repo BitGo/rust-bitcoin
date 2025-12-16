@@ -1,22 +1,16 @@
-# Contributing to rust-bitcoin
+# Contributing to rust-bitcoin (BitGo Fork)
 
 :+1::tada: First off, thanks for taking the time to contribute! :tada::+1:
 
-The following is a set of guidelines for contributing to Rust Bitcoin
-implementation and other Rust Bitcoin-related projects, which are hosted in the
-[Rust Bitcoin Community](https://github.com/rust-bitcoin) on GitHub. These are
-mostly guidelines, not rules. Use your best judgment, and feel free to propose
-changes to this document in a pull request.
+This is BitGo's fork of rust-bitcoin that adds support for select altcoins.
+The following guidelines are adapted from the upstream project.
 
 #### Table Of Contents
 
 - [General](#general)
-- [Communication channels](#communication-channels)
-- [Asking questions](#asking-questions)
 - [Contribution workflow](#contribution-workflow)
   * [Preparing PRs](#preparing-prs)
   * [Peer review](#peer-review)
-  * [Repository maintainers](#repository-maintainers)
 - [Coding conventions](#coding-conventions)
   * [Naming conventions](#naming-conventions)
   * [Upgrading dependencies](#upgrading-dependencies)
@@ -29,41 +23,18 @@ changes to this document in a pull request.
 
 ## General
 
-The Rust Bitcoin project operates an open contributor model where anyone is
-welcome to contribute towards development in the form of peer review,
-documentation, testing and patches.
+This fork is maintained by BitGo to add altcoin support that the upstream
+rust-bitcoin project does not provide. We welcome contributions that:
 
-Anyone is invited to contribute without regard to technical experience,
-"expertise", OSS experience, age, or other concern. However, the development of
-standards & reference implementations demands a high-level of rigor, adversarial
-thinking, thorough testing and risk-minimization. Any bug may cost users real
-money. That being said, we deeply welcome people contributing for the first time
-to an open source project or pick up Rust while contributing. Don't be shy,
-you'll learn.
+- Fix bugs in Bitcoin or altcoin functionality
+- Add support for additional altcoins needed by BitGo
+- Keep us in sync with upstream rust-bitcoin improvements
 
+When contributing altcoin-specific code, please keep it isolated from core
+Bitcoin functionality to minimize merge conflicts with upstream.
 
-## Communication channels
-
-Communication about Rust Bitcoin happens primarily in
-[#bitcoin-rust](https://web.libera.chat/?channel=#bitcoin-rust) IRC chat on
-[Libera](https://libera.chat/) with the logs available at
-<https://gnusha.org/bitcoin-rust/> (starting from Jun 2021 and now on) and
-<https://gnusha.org/rust-bitcoin/> (historical archive before Jun 2021).
-
-Discussion about code base improvements happens in GitHub issues and on pull
-requests.
-
-Major projects are tracked [here](https://github.com/orgs/rust-bitcoin/projects).
-Major milestones are tracked [here](https://github.com/rust-bitcoin/rust-bitcoin/milestones).
-
-
-## Asking questions
-
-> **Note:** Please don't file an issue to ask a question. You'll get faster
-> results by using the resources below.
-
-We have a dedicated developer channel on IRC, #bitcoin-rust@libera.chat where
-you may get helpful advice if you have questions.
+For upstream rust-bitcoin development, please contribute directly to the
+[upstream repository](https://github.com/rust-bitcoin/rust-bitcoin).
 
 
 ## Contribution workflow
@@ -111,8 +82,7 @@ Prerequisites that a PR must satisfy for merging into the `master` branch:
   reorder them during review and check that the new tests fail without the new
   code);
 * contain all inline docs for newly introduced API and pass doc tests;
-* be based on the recent `master` tip from the original repository at
-  <https://github.com/rust-bitcoin/rust-bitcoin>.
+* be based on the recent `master` tip from this repository.
 
 NB: reviewers may run more complex test/CI scripts, thus, satisfying all the
 requirements above is just a preliminary, but not necessary sufficient step for
@@ -134,53 +104,8 @@ grammar fixes.
 
 ### Repository maintainers
 
-Pull request merge requirements:
-- all CI test should pass,
-- at least two "accepts"/ACKs from the repository maintainers (see "refactor carve-out").
-- no reasonable "rejects"/NACKs from anybody who reviewed the code.
-
-Current list of the project maintainers:
-
-- [Andrew Poelstra](https://github.com/apoelstra)
-- [Steven Roose](https://github.com/stevenroose)
-- [Matt Corallo](https://github.com/TheBlueMatt)
-- [Elichai Turkel](https://github.com/elichai)
-- [Sanket Kanjalkar](https://github.com/sanket1729)
-- [Martin Habovštiak](https://github.com/Kixunil)
-- [Riccardo Casatta](https://github.com/RCasatta)
-- [Tobin Harding](https://github.com/tcharding)
-
-#### One ACK carve-out
-
-The repository is going through heavy refactoring and "trivial" API redesign
-(eg, rename `Foo::empty` to `Foo::new`) as we push towards API stabilization. As
-such reviewers are either bored or overloaded with notifications, hence we have
-created a carve out to the 2-ACK rule.
-
-We reserve the right to merge PRs with a single ACK [0], at any time, if they match
-any of the following conditions:
-
-0. PR has a single ACK and has sat open for at least two weeks with no comments,
-   questions, or NACKs.
-1. PR only touches CI i.e, only changes any of the test scripts and/or
-   stuff in `.github/workflows`.
-2. Non-content changing documentation fixes i.e., grammar/typos, spelling, full
-   stops, capital letters. Any change with more substance must still get two
-   ACKs.
-3. Code moves that do not change the API e.g., moving error types to a private
-   submodule and re-exporting them from the original module. Must not include
-   any code changes except to import paths. Requires absolutely no change to the
-   public API.
-4. PR has previously had two ACKs, had minimal changes, and gets a single ACK
-   from Andrew. This call is subjective, gives extra privileges, but also
-   requires extra responsibility/accountability (including running a bunch
-   of local CI checks before merging) [1].
-
-
-
-[0] - Obviously author and ACK'er must not be the same person.
-[1] - The aim is to reduce the burden of re-ACK'ing trivial changes and also
-      alleviate the problem of devs spread around the world in different timezones.
+This fork is maintained by the BitGo engineering team. Pull requests should be
+reviewed by at least one team member before merging.
 
 
 ## Coding conventions
@@ -417,12 +342,12 @@ We use SPDX license tags, all files should start with
 ## Security
 
 Security is the primary focus for this library; disclosure of security
-vulnerabilities helps prevent user loss of funds. If you believe a vulnerability
-may affect other implementations, please disclose this information according to
-the [security guidelines](./SECURITY.md), work on which is currently in progress.
-Before it is completed, feel free to send disclosure to Andrew Poelstra,
-apoelstra@wpsoftware.net, encrypted with his public key from
-<https://www.wpsoftware.net/andrew/andrew.gpg>.
+vulnerabilities helps prevent user loss of funds. If you believe you have found
+a security vulnerability, please report it through BitGo's security disclosure
+process or contact the BitGo security team directly.
+
+For vulnerabilities that may affect the upstream rust-bitcoin project, please
+also follow their [security guidelines](https://github.com/rust-bitcoin/rust-bitcoin/blob/master/SECURITY.md).
 
 
 ## Testing
@@ -438,10 +363,10 @@ the [readme](./README.md) for more information.
 
 ## Going further
 
-You may be interested in the guide by Jon Atack on
-[How to review Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-review-bitcoin-core-prs.md)
-and [How to make Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-make-bitcoin-core-prs.md).
-While there are differences between the projects in terms of context and
-maturity, many of the suggestions offered apply to this project.
+For more context on Bitcoin development practices, you may be interested in:
 
-Overall, have fun :)
+- [Upstream rust-bitcoin repository](https://github.com/rust-bitcoin/rust-bitcoin)
+- [How to review Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-review-bitcoin-core-prs.md)
+- [How to make Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-make-bitcoin-core-prs.md)
+
+Happy hacking!

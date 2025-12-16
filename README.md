@@ -1,38 +1,41 @@
 <div align="center">
-  <h1>Rust Bitcoin</h1>
+  <h1>Rust Bitcoin (BitGo Fork)</h1>
 
   <img alt="Rust Bitcoin logo by Hunter Trujillo, see license and source files under /logo" src="./logo/rust-bitcoin.png" width="300" />
 
-  <p>Library with support for de/serialization, parsing and executing on data-structures
-    and network messages related to Bitcoin.
+  <p>BitGo's fork of rust-bitcoin with support for Bitcoin and select altcoins
+    including Bitcoin Cash (BCH).
   </p>
 
   <p>
-    <a href="https://crates.io/crates/bitcoin"><img alt="Crate Info" src="https://img.shields.io/crates/v/bitcoin.svg"/></a>
     <a href="https://github.com/rust-bitcoin/rust-bitcoin/blob/master/LICENSE"><img alt="CC0 1.0 Universal Licensed" src="https://img.shields.io/badge/license-CC0--1.0-blue.svg"/></a>
-    <a href="https://github.com/rust-bitcoin/rust-bitcoin/actions?query=workflow%3AContinuous%20integration"><img alt="CI Status" src="https://github.com/rust-bitcoin/rust-bitcoin/workflows/Continuous%20integration/badge.svg"></a>
-    <a href="https://docs.rs/bitcoin"><img alt="API Docs" src="https://img.shields.io/badge/docs.rs-bitcoin-green"/></a>
     <a href="https://blog.rust-lang.org/2021/11/01/Rust-1.56.1.html"><img alt="Rustc Version 1.56.1+" src="https://img.shields.io/badge/rustc-1.56.1%2B-lightgrey.svg"/></a>
-    <a href="https://gnusha.org/bitcoin-rust/"><img alt="Chat on IRC" src="https://img.shields.io/badge/irc-%23bitcoin--rust%20on%20libera.chat-blue"></a>
-    <a href="https://github.com/model-checking/kani"><imp alt="kani" src="https://github.com/rust-bitcoin/rust-bitcoin/actions/workflows/kani.yaml/badge.svg"></a>
   </p>
 </div>
 
-[Documentation](https://docs.rs/bitcoin/)
+This is a [BitGo](https://www.bitgo.com/) fork of [rust-bitcoin](https://github.com/rust-bitcoin/rust-bitcoin)
+that extends the library with support for select altcoins. The upstream project does not support altcoins
+(see their [policy](#policy-on-altcoinsaltchains)), so we maintain this fork for our internal needs.
 
-Supports (or should support)
+## Altcoin Support
+
+This fork adds support for:
+
+* **Bitcoin Cash (BCH)**: SIGHASH_FORKID for replay-protected transactions, BCH-compatible PSBT signing
+
+See the `altcoins/` directory for specifications and test vectors.
+
+## Upstream Features
+
+All upstream rust-bitcoin features are supported:
 
 * De/serialization of Bitcoin protocol network messages
 * De/serialization of blocks and transactions
 * Script de/serialization
 * Private keys and address creation, de/serialization and validation (including full BIP32 support)
-* PSBT v0 de/serialization and all but the Input Finalizer role. Use [rust-miniscript](https://docs.rs/miniscript/latest/miniscript/psbt/index.html) to finalize.
+* PSBT v0 de/serialization and all but the Input Finalizer role
 
-For JSONRPC interaction with Bitcoin Core, it is recommended to use
-[rust-bitcoincore-rpc](https://github.com/rust-bitcoin/rust-bitcoincore-rpc).
-
-It is recommended to always use [cargo-crev](https://github.com/crev-dev/cargo-crev) to verify the
-trustworthiness of each of your dependencies, including this one.
+For upstream documentation, see [docs.rs/bitcoin](https://docs.rs/bitcoin/).
 
 ## Known limitations
 
@@ -59,11 +62,8 @@ and to expand on existing docs would be extremely appreciated.
 
 ## Contributing
 
-Contributions are generally welcome. If you intend to make larger changes please discuss them in an
-issue before PRing them to avoid duplicate work and architectural mismatches. If you have any
-questions or ideas you want to discuss please join us in
-[#bitcoin-rust](https://web.libera.chat/?channel=#bitcoin-rust) on
-[libera.chat](https://libera.chat).
+Contributions are welcome. If you intend to make larger changes please discuss them in an
+issue before PRing them to avoid duplicate work and architectural mismatches.
 
 For more information please see `./CONTRIBUTING.md`.
 
@@ -107,7 +107,7 @@ be usable without `std`. Both can be enabled without conflict.
 The library can be built and tested using [`cargo`](https://github.com/rust-lang/cargo/):
 
 ```
-git clone git@github.com:rust-bitcoin/rust-bitcoin.git
+git clone git@github.com:BitGo/rust-bitcoin.git
 cd rust-bitcoin
 cargo build
 ```
@@ -170,9 +170,8 @@ We have started using [kani](https://github.com/model-checking/kani), install wi
 
 ## Pull Requests
 
-Every PR needs at least two reviews to get merged. During the review phase maintainers and
-contributors are likely to leave comments and request changes. Please try to address them, otherwise
-your PR might get closed without merging after a longer time of inactivity. If your PR isn't ready
+PRs should be reviewed by at least one BitGo team member before merging. During the review phase,
+reviewers may leave comments and request changes. Please try to address them. If your PR isn't ready
 for review yet please mark it by prefixing the title with `WIP: `.
 
 ### CI Pipeline
@@ -197,12 +196,11 @@ Alternatively add symlinks in your `.git/hooks` directory to any of the githooks
 
 ## Policy on Altcoins/Altchains
 
-Since the altcoin landscape includes projects which [frequently appear and disappear, and are poorly
-designed anyway](https://download.wpsoftware.net/bitcoin/alts.pdf) we do not support any altcoins.
-Supporting Bitcoin properly is already difficult enough and we do not want to increase the
-maintenance burden and decrease API stability by adding support for other coins.
+The upstream rust-bitcoin project does not support altcoins. This BitGo fork adds support for
+select altcoins that we need for our business operations. We aim to keep altcoin-specific code
+isolated and minimize divergence from upstream to ease future merges.
 
-Our code is public domain so by all means fork it and go wild :)
+If you need altcoin support beyond what this fork provides, you're welcome to fork further.
 
 
 ## Release Notes
