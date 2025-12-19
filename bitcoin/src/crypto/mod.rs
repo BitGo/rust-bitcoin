@@ -8,5 +8,6 @@
 pub mod ecdsa;
 pub mod key;
 pub mod sighash;
+pub mod sighash_zcash;
 // Contents re-exported in `bitcoin::taproot`.
 pub(crate) mod taproot;

@@ -30,7 +30,7 @@ use crate::crypto::{ecdsa, taproot};
 use crate::hashes::Hash as _;
 use crate::key::{TapTweak, XOnlyPublicKey};
 use crate::prelude::*;
-use crate::sighash::{self, EcdsaSighashType, Prevouts, SighashCache};
+use crate::sighash::{self, EcdsaSighashType, Prevouts, SighashCache, SighashCacheZcashExt};
 use crate::{Amount, FeeRate, TapLeafHash, TapSighashType};
 
 #[rustfmt::skip]                // Keep public re-exports separate.
@@ -403,6 +403,75 @@ impl Psbt {
         }
     }
 
+    /// Sign all inputs with Zcash ZIP-243 sighash algorithm.
+    ///
+    /// Use this for Zcash transparent inputs.
+    ///
+    /// # Arguments
+    /// * `k` - Key provider
+    /// * `secp` - Secp256k1 context
+    /// * `consensus_branch_id` - Zcash network upgrade branch ID
+    /// * `expiry_height` - Transaction expiry height
+    ///
+    /// # Returns
+    ///
+    /// A map of input index -> keys used to sign, for specifics please see [`SigningKeys`].
+    ///
+    /// If an error is returned some signatures may already have been added to the PSBT.
+    pub fn sign_zcash<C, K>(
+        &mut self,
+        k: &K,
+        secp: &Secp256k1<C>,
+        consensus_branch_id: u32,
+        version_group_id: u32,
+        expiry_height: u32,
+    ) -> Result<SigningKeysMap, (SigningKeysMap, SigningErrors)>
+    where
+        C: Signing + Verification,
+        K: GetKey,
+    {
+        let tx = self.unsigned_tx.clone();
+        let mut cache = SighashCache::new(&tx);
+
+        let mut used = BTreeMap::new();
+        let mut errors = BTreeMap::new();
+
+        for i in 0..self.inputs.len() {
+            match self.signing_algorithm(i) {
+                Ok(SigningAlgorithm::Ecdsa) => {
+                    match self.bip32_sign_zcash(
+                        k,
+                        i,
+                        &mut cache,
+                        secp,
+                        consensus_branch_id,
+                        version_group_id,
+                        expiry_height,
+                    ) {
+                        Ok(v) => {
+                            used.insert(i, SigningKeys::Ecdsa(v));
+                        }
+                        Err(e) => {
+                            errors.insert(i, e);
+                        }
+                    }
+                }
+                Ok(SigningAlgorithm::Schnorr) => {
+                    // Zcash doesn't support Taproot/Schnorr
+                    errors.insert(i, SignError::Unsupported);
+                }
+                Err(e) => {
+                    errors.insert(i, e);
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(used)
+        } else {
+            Err((used, errors))
+        }
+    }
+
     /// Attempts to create all signatures required by this PSBT's `bip32_derivation` field, adding
     /// them to `partial_sigs`.
     ///
@@ -489,6 +558,75 @@ impl Psbt {
         let msg_sighash_ty_res = self.sighash_forkid(input_index, cache, fork_id);
 
         let input = &mut self.inputs[input_index]; // Index checked in call to `sighash_forkid`.
+
+        let mut used = vec![]; // List of pubkeys used to sign the input.
+
+        for (pk, key_source) in input.bip32_derivation.iter() {
+            let sk = if let Ok(Some(sk)) = k.get_key(KeyRequest::Bip32(key_source.clone()), secp) {
+                sk
+            } else if let Ok(Some(sk)) = k.get_key(KeyRequest::Pubkey(PublicKey::new(*pk)), secp) {
+                sk
+            } else {
+                continue;
+            };
+
+            // Only return the error if we have a secret key to sign this input.
+            let (msg, sighash_ty) = match msg_sighash_ty_res {
+                Err(e) => return Err(e),
+                Ok((msg, sighash_ty)) => (msg, sighash_ty),
+            };
+
+            let sig = ecdsa::Signature {
+                signature: secp.sign_ecdsa(&msg, &sk.inner),
+                sighash_type: sighash_ty,
+            };
+
+            let pk = sk.public_key(secp);
+
+            input.partial_sigs.insert(pk, sig);
+            used.push(pk);
+        }
+
+        Ok(used)
+    }
+
+    /// Attempts to create all signatures for a Zcash transparent input using BIP32 keys.
+    ///
+    /// Use this for Zcash transparent inputs using ZIP-243 sighash algorithm.
+    ///
+    /// # Arguments
+    ///
+    /// * `k` - A key source providing the secret keys.
+    /// * `input_index` - The index of the input to sign.
+    /// * `cache` - A [`SighashCache`] for computing the sighash.
+    /// * `secp` - A secp256k1 context for signing.
+    /// * `consensus_branch_id` - Zcash network upgrade branch ID.
+    /// * `version_group_id` - Zcash transaction version group ID.
+    /// * `expiry_height` - Transaction expiry height.
+    ///
+    /// # Returns
+    ///
+    /// - Ok: A list of the public keys used in signing.
+    /// - Err: Error encountered trying to calculate the sighash AND we had the signing key.
+    pub fn bip32_sign_zcash<C, K, T>(
+        &mut self,
+        k: &K,
+        input_index: usize,
+        cache: &mut SighashCache<T>,
+        secp: &Secp256k1<C>,
+        consensus_branch_id: u32,
+        version_group_id: u32,
+        expiry_height: u32,
+    ) -> Result<Vec<PublicKey>, SignError>
+    where
+        C: Signing,
+        T: Borrow<Transaction>,
+        K: GetKey,
+    {
+        let msg_sighash_ty_res =
+            self.sighash_zcash(input_index, cache, consensus_branch_id, version_group_id, expiry_height);
+
+        let input = &mut self.inputs[input_index]; // Index checked in call to `sighash_zcash`.
 
         let mut used = vec![]; // List of pubkeys used to sign the input.
 
@@ -673,6 +811,76 @@ impl Psbt {
         let hash_ty = input.raw_sighash_type().unwrap_or(0x01 | SIGHASH_FORKID_FLAG);
 
         self.sighash_ecdsa_forkid(input_index, cache, hash_ty, Some(fork_id))
+    }
+
+    /// Compute sighash for a Zcash transparent input using ZIP-243 algorithm.
+    ///
+    /// Returns the sighash message and sighash type for signing.
+    ///
+    /// # Arguments
+    ///
+    /// * `input_index` - The index of the input to compute sighash for.
+    /// * `cache` - A [`SighashCache`] for computing the sighash.
+    /// * `consensus_branch_id` - Zcash network upgrade branch ID.
+    /// * `version_group_id` - Zcash transaction version group ID.
+    /// * `expiry_height` - Transaction expiry height.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (Message, sighash_type as u32) on success.
+    pub fn sighash_zcash<T: Borrow<Transaction>>(
+        &self,
+        input_index: usize,
+        cache: &mut SighashCache<T>,
+        consensus_branch_id: u32,
+        version_group_id: u32,
+        expiry_height: u32,
+    ) -> Result<(Message, u32), SignError> {
+        use OutputType::*;
+
+        let input = self.checked_input(input_index)?;
+        let utxo = self.spend_utxo(input_index)?;
+        let spk = &utxo.script_pubkey;
+
+        // Default to SIGHASH_ALL for Zcash
+        let hash_ty = input.raw_sighash_type().unwrap_or(0x01);
+
+        match self.output_type(input_index)? {
+            Bare => {
+                // P2PKH
+                let sighash = cache
+                    .p2pkh_signature_hash_zcash(
+                        input_index,
+                        spk,
+                        utxo.value,
+                        hash_ty,
+                        consensus_branch_id,
+                        version_group_id,
+                        expiry_height,
+                    )
+                    .map_err(SignError::SegwitV0Sighash)?;
+                Ok((Message::from(sighash), hash_ty))
+            }
+            Sh => {
+                // P2SH
+                let script_code =
+                    input.redeem_script.as_ref().ok_or(SignError::MissingRedeemScript)?;
+                let sighash = cache
+                    .p2sh_signature_hash_zcash(
+                        input_index,
+                        script_code,
+                        utxo.value,
+                        hash_ty,
+                        consensus_branch_id,
+                        version_group_id,
+                        expiry_height,
+                    )
+                    .map_err(SignError::SegwitV0Sighash)?;
+                Ok((Message::from(sighash), hash_ty))
+            }
+            // Zcash transparent only supports P2PKH and P2SH
+            Wpkh | ShWpkh | Wsh | ShWsh | Tr => Err(SignError::Unsupported),
+        }
     }
 
     /// Internal implementation for ECDSA sighash computation with optional FORKID support.

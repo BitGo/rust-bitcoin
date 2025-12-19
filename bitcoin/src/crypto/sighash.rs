@@ -55,6 +55,9 @@ hash_newtype! {
 impl_message_from_hash!(LegacySighash);
 impl_message_from_hash!(SegwitV0Sighash);
 
+// Re-export Zcash sighash types from the dedicated module
+pub use super::sighash_zcash::{SighashCacheZcashExt, ZcashSighash};
+
 sha256t_hash_newtype! {
     pub struct TapSighashTag = hash_str("TapSighash");
 
