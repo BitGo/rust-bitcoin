@@ -1,3 +1,5 @@
+> **Note**: This is a BitGo fork of [rust-bitcoin/rust-bitcoin](https://github.com/rust-bitcoin/rust-bitcoin) with customizations for altcoin support.
+
 <div align="center">
   <h1>Rust Bitcoin</h1>
 
