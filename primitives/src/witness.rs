@@ -337,7 +337,8 @@ impl Decoder for WitnessDecoder {
     type Error = WitnessDecoderError;
 
     fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
-        use {WitnessDecoderError as E, WitnessDecoderErrorInner as Inner};
+        use WitnessDecoderError as E;
+        use WitnessDecoderErrorInner as Inner;
 
         // Read initial witness element count.
         if self.witness_elements.is_none() {
@@ -445,7 +446,8 @@ impl Decoder for WitnessDecoder {
     }
 
     fn end(mut self) -> Result<Self::Output, Self::Error> {
-        use {WitnessDecoderError as E, WitnessDecoderErrorInner as Inner};
+        use WitnessDecoderError as E;
+        use WitnessDecoderErrorInner as Inner;
 
         let Some(witness_elements) = self.witness_elements else {
             // Never read the witness element count.

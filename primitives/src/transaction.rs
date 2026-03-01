@@ -449,10 +449,9 @@ impl Decoder for TransactionDecoder {
 
     #[inline]
     fn push_bytes(&mut self, bytes: &mut &[u8]) -> Result<bool, Self::Error> {
-        use {
-            TransactionDecoderError as E, TransactionDecoderErrorInner as Inner,
-            TransactionDecoderState as State,
-        };
+        use TransactionDecoderError as E;
+        use TransactionDecoderErrorInner as Inner;
+        use TransactionDecoderState as State;
 
         loop {
             // Attempt to push to the currently-active decoder and return early on success.
@@ -575,10 +574,9 @@ impl Decoder for TransactionDecoder {
 
     #[inline]
     fn end(self) -> Result<Self::Output, Self::Error> {
-        use {
-            TransactionDecoderError as E, TransactionDecoderErrorInner as Inner,
-            TransactionDecoderState as State,
-        };
+        use TransactionDecoderError as E;
+        use TransactionDecoderErrorInner as Inner;
+        use TransactionDecoderState as State;
 
         match self.state {
             State::Version(_) => Err(E(Inner::EarlyEnd("version"))),
