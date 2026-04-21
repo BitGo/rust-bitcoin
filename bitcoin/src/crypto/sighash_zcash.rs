@@ -12,8 +12,6 @@ use core::borrow::Borrow;
 use core::fmt;
 
 use blake2::digest::core_api::{Buffer, UpdateCore};
-use blake2::digest::generic_array::GenericArray;
-use blake2::digest::typenum::U128;
 use blake2::digest::Output;
 use blake2::Blake2bVarCore;
 
@@ -339,22 +337,12 @@ fn zcash_hash_single_output(tx: &Transaction, index: usize) -> [u8; 32] {
 
 /// Compute BLAKE2b-256 hash with personalization for Zcash (ZIP-243).
 pub(crate) fn blake2b_256_personal(data: &[u8], personalization: &[u8]) -> [u8; 32] {
-    // Create a new core with personalization. Parameters: (salt, persona, key_size, output_size)
     let mut core = Blake2bVarCore::new_with_params(&[], personalization, 0, 32);
-
-    // Process data in 128-byte blocks (BLAKE2b block size)
-    let block_size = 128;
-    let mut pos = 0;
-
-    while pos + block_size <= data.len() {
-        let block = GenericArray::<u8, U128>::from_slice(&data[pos..pos + block_size]);
-        core.update_blocks(core::slice::from_ref(block));
-        pos += block_size;
-    }
-
-    // Handle final block with padding
+    // Use the Lazy buffer for all data so the last block is retained in the buffer
+    // until finalize, ensuring the correct finalization flag even when data.len()
+    // is an exact multiple of the 128-byte BLAKE2b block size.
     let mut buffer: Buffer<Blake2bVarCore> = Default::default();
-    buffer.digest_blocks(&data[pos..], |blocks| core.update_blocks(blocks));
+    buffer.digest_blocks(data, |blocks| core.update_blocks(blocks));
 
     // Finalize
     let mut full_output: Output<Blake2bVarCore> = Default::default();
