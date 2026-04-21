@@ -12,8 +12,6 @@ use core::borrow::Borrow;
 use core::fmt;
 
 use blake2::digest::core_api::{Buffer, UpdateCore};
-use blake2::digest::generic_array::GenericArray;
-use blake2::digest::typenum::U128;
 use blake2::digest::Output;
 use blake2::Blake2bVarCore;
 
@@ -339,22 +337,12 @@ fn zcash_hash_single_output(tx: &Transaction, index: usize) -> [u8; 32] {
 
 /// Compute BLAKE2b-256 hash with personalization for Zcash (ZIP-243).
 pub(crate) fn blake2b_256_personal(data: &[u8], personalization: &[u8]) -> [u8; 32] {
-    // Create a new core with personalization. Parameters: (salt, persona, key_size, output_size)
     let mut core = Blake2bVarCore::new_with_params(&[], personalization, 0, 32);
-
-    // Process data in 128-byte blocks (BLAKE2b block size)
-    let block_size = 128;
-    let mut pos = 0;
-
-    while pos + block_size <= data.len() {
-        let block = GenericArray::<u8, U128>::from_slice(&data[pos..pos + block_size]);
-        core.update_blocks(core::slice::from_ref(block));
-        pos += block_size;
-    }
-
-    // Handle final block with padding
+    // Use the Lazy buffer for all data so the last block is retained in the buffer
+    // until finalize, ensuring the correct finalization flag even when data.len()
+    // is an exact multiple of the 128-byte BLAKE2b block size.
     let mut buffer: Buffer<Blake2bVarCore> = Default::default();
-    buffer.digest_blocks(&data[pos..], |blocks| core.update_blocks(blocks));
+    buffer.digest_blocks(data, |blocks| core.update_blocks(blocks));
 
     // Finalize
     let mut full_output: Output<Blake2bVarCore> = Default::default();
@@ -637,5 +625,51 @@ mod tests {
             FromHex::from_hex("d2b04118469b7810a0d1cc59568320aad25a84f407ecac40b4f605a4e6868454")
                 .unwrap();
         assert_eq!(hash_outputs, expected_outputs, "hashOutputs mismatch");
+    }
+
+    /// Regression test: blake2b_256_personal must produce the correct hash when the
+    /// input length is an exact multiple of the 128-byte BLAKE2b block size.
+    ///
+    /// The old implementation fed all complete blocks to `update_blocks` and left the
+    /// buffer empty for `finalize_variable_core`, which then compressed a spurious
+    /// all-zero block — producing a wrong hash for any block-aligned input.
+    #[test]
+    fn test_blake2b_256_personal_block_aligned() {
+        // Expected values computed with Python hashlib:
+        //   hashlib.blake2b(data, digest_size=32, person=b"ZcashOutputsHash").hexdigest()
+        let persona = b"ZcashOutputsHash";
+
+        // 256 bytes = 2 × block size
+        let data256 = vec![0xabu8; 256];
+        let expected256: [u8; 32] =
+            FromHex::from_hex("f2cee55bab0bc6b421a97e26b7c55f63f22fea6cf5fbc5ad1c290872bd470f3e")
+                .unwrap();
+        assert_eq!(
+            blake2b_256_personal(&data256, persona),
+            expected256,
+            "wrong hash for 256-byte (2-block) input"
+        );
+
+        // 128 bytes = 1 × block size
+        let data128 = vec![0xabu8; 128];
+        let expected128: [u8; 32] =
+            FromHex::from_hex("8e802425ab1d83222d0bcf18140d61ae70670796be480fdd50b3027a3ca5478d")
+                .unwrap();
+        assert_eq!(
+            blake2b_256_personal(&data128, persona),
+            expected128,
+            "wrong hash for 128-byte (1-block) input"
+        );
+
+        // 100 bytes (non-aligned) — sanity check that the fix didn't break the common case
+        let data100 = vec![0xabu8; 100];
+        let expected100: [u8; 32] =
+            FromHex::from_hex("3df66bd2c00b813fff6119fde7464294eab4fbecc311dd18c2bddeb6120d97f7")
+                .unwrap();
+        assert_eq!(
+            blake2b_256_personal(&data100, persona),
+            expected100,
+            "wrong hash for 100-byte (non-aligned) input"
+        );
     }
 }
